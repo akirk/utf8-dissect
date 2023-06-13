@@ -1,42 +1,46 @@
 <?php
 // PHP port of http://software.hixie.ch/utilities/cgi/unicode-decoder/utf8-decoder
 // Unknown license
-// with some enhancements by Alex Kirk in 2015
+// with some enhancements by Alex Kirk in 2015 and 2023.
 
 class UTF8_Dissect {
 	private static $nameslist;
 	public static $names = '', $result = '', $entities = '';
-	const DOWNLOAD_TO_TEMP = true;
+	const DOWNLOAD_TO_TEMP = false;
 
 	private static function loadNames() {
-		if ( !self::$nameslist ) {
-			if ( self::DOWNLOAD_TO_TEMP ) {
-				$filename = sys_get_temp_dir() . '/NamesList.txt';
-			} else {
-				$filename = __DIR__ . '/NamesList.txt';
-			}
+		if ( self::$nameslist ) {
+			return;
+		}
 
-			if ( ! file_exists( $filename ) ) {
-				$nameslist_txt = 'http://www.unicode.org/Public/UNIDATA/NamesList.txt';
+		$filename = __DIR__ . '/NamesList.txt';
+		if ( ! file_exists( $filename ) ) {
+			$filename = sys_get_temp_dir() . '/NamesList.txt';
+		}
 
-				if ( self::DOWNLOAD_TO_TEMP ) {
-					echo 'Downloading NamesList.txt...<br/>';
-					file_put_contents( $filename, file_get_contents( $nameslist_txt ) );
-
-					if ( ! file_exists( $filename ) || ! filesize( $filename) ) {
-						echo 'Could not download NamesList.txt!';
-						exit;
-					}
-				} else {
-					echo 'Please download NamesList.txt from ', $nameslist_txt;
-					exit;
-				}
-			}
+		if ( file_exists( $filename ) ) {
 			self::$nameslist = file_get_contents( $filename );
+			return;
+		}
+
+		$nameslist_txt = 'http://www.unicode.org/Public/UNIDATA/NamesList.txt';
+
+		if ( ! self::DOWNLOAD_TO_TEMP ) {
+			echo 'Please download NamesList.txt from ', $nameslist_txt;
+			exit;
+		}
+
+		echo 'Downloading NamesList.txt...<br/>';
+		self::$nameslist = file_get_contents( $nameslist_txt );
+		file_put_contents( $filename, self::$nameslist );
+
+		if ( ! file_exists( $filename ) || ! filesize( $filename) ) {
+			echo 'Could not write ' . $filename . '!';
+			exit;
 		}
 	}
 
-	public static function getName( $code ) {
+	public static function getName( $code, $bytes ) {
 		self::loadNames();
 
 		$separator = "\n";
@@ -56,37 +60,47 @@ class UTF8_Dissect {
 		}
 		self::$result .= 'U+' . $code;
 		$charname = trim( $data );
-		$charitself = hexdec($code) < 0x7F ?
-			(hexdec($code) <= 0x20 || (hexdec($code) >= 0x61 && hexdec($code) <= 0x7A)
-			|| (hexdec($code) >= 0x41 && hexdec($code) <= 0x5A)) ? '' : ' (' . chr(hexdec($code)) . ')' : " (&#x$code;)";
-		self::$names .= "U+$charname character$charitself\n";
-
-		while ( $data !== false && substr( $data, 0, 1 ) === "\t" ) {
-			self::$result .= $data;
-			$data = strtok( $separator );
+		if ( hexdec($code) < 0x7F ) {
+			if (hexdec($code) <= 0x20 || (hexdec($code) >= 0x61 && hexdec($code) <= 0x7A)
+				|| (hexdec($code) >= 0x41 && hexdec($code) <= 0x5A)) {
+				$charitself = ': ' . chr(hexdec($code));
+		} else {
+			$charitself = ': ' . chr(hexdec($code));
 		}
+	} else {
+		$charitself = ': ' . $bytes;
+	}
+	self::$names .= "U+$charname character$charitself\n";
 
+	while ( $data !== false && substr( $data, 0, 1 ) === "\t" ) {
+		self::$result .= $data;
+		$data = strtok( $separator );
 	}
 
-	public static function dissect( $query ) {
+}
 
-		$bytes = unpack( 'C*', $query );
-		if ( ! $bytes ) {
-			return false;
-		}
+public static function dissect( $query ) {
 
-		self::$result = '';
-		self::$entities = '';
-		self::$names = '';
-		$remaining = 0;
-		$count = 0;
-		$scratch = 0;
-		$index = 0;
+	$bytes = unpack( 'C*', $query );
 
-		foreach ( $bytes as $raw ) {
-			++$index;
+	if ( ! $bytes ) {
+		return false;
+	}
 
-			self::$result .= sprintf("\nByte number $index is decimal %d, hex 0x%02X, octal %04o, binary %08b\n", $raw, $raw, $raw, $raw);
+	self::$result = '';
+	self::$entities = '';
+	self::$names = '';
+	$remaining = 0;
+	$count = 0;
+	$scratch = 0;
+	$index = 0;
+	$byte_sequence = '';
+
+	foreach ( $bytes as $raw ) {
+		++$index;
+		$byte_sequence .= chr( $raw );
+
+		self::$result .= sprintf("\nByte number $index is decimal %d, hex 0x%02X, octal %04o, binary %08b\n", $raw, $raw, $raw, $raw);
 			if ($raw == 0xFE or $raw == 0xFF) { // UTF-8 validity test
 				echo "Not a valid UTF-8 byte.\n";
 				return false;
@@ -139,8 +153,9 @@ class UTF8_Dissect {
 				self::$entities .= '&#x' . sprintf('%04x', $scratch) . ';';
 				$scratch = sprintf('%04X', $scratch);
 				self::$result .= "\n";
-				self::getName( $scratch );
+				self::getName( $scratch, $byte_sequence );
 				self::$result .= "\n";
+				$byte_sequence = '';
 			}
 		};
 
